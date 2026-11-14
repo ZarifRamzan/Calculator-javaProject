@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+# Least privilege by default; jobs elevate only what they need.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}}-${{ github.ref }}}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: "17"
+  MAVEN_ARGS: -B -ntp -Dstyle.color=always
+
+jobs:
+  validate:
+    name: "Validate · Lint & Format"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}}
+          cache: maven
+
+      - name: Maven Enforcer (toolchain & POM hygiene)
+        run: mvn $MAVEN_ARGS enforcer:enforce
+
+      - name: Checkstyle (static analysis)
+        run: mvn $MAVEN_ARGS checkstyle:check
+
+      - name: Spotless (formatting)
+        run: mvn $MAVEN_ARGS spotless:check
+
+      - name: Upload static analysis report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: checkstyle-report
+          path: target/checkstyle-result.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test:
+    name: "Test · Unit & Coverage"
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}}
+          cache: maven
+
+      - name: Unit tests with coverage gate
+        run: mvn $MAVEN_ARGS verify
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  build:
+    name: "Build · Package"
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}}
+          cache: maven
+
+      - name: Package executable JAR
+        run: mvn $MAVEN_ARGS -DskipTests package
+
+      - name: Verify artifact
+        run: |
+          ls -l target/*.jar
+          unzip -p target/*.jar META-INF/MANIFEST.MF
+          sha256sum target/*.jar
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v7
+        with:
+          name: calculator-app-jar
+          path: target/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  security-sca:
+    name: "Security · Dependencies, Secrets & Config"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Pinned to a commit SHA on purpose: third-party actions must not float.
+      - name: Trivy scan (vulnerabilities, secrets, misconfiguration)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "1"
+
+      - name: Upload Trivy results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+  codeql:
+    name: "Security · SAST (CodeQL)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: java-kotlin
+          queries: security-extended
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}}
+          cache: maven
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:java-kotlin
