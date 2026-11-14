@@ -1,0 +1,17 @@
+# Maven build output (produced by CI, never committed)
+target/
+
+# IDE / tooling
+.idea/
+*.iml
+nbproject/private/
+.settings/
+.classpath
+.project
+
+# Logs
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
