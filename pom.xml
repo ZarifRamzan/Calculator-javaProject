@@ -156,7 +156,6 @@
         <configuration>
           <systemPropertyVariables>
             <java.awt.headless>true</java.awt.headless>
-            <file.encoding>UTF-8</file.encoding>
           </systemPropertyVariables>
         </configuration>
       </plugin>
@@ -184,6 +183,11 @@
             <goals>
               <goal>report</goal>
             </goals>
+            <configuration>
+              <includes>
+                <include>com.mycompany.calculator.*</include>
+              </includes>
+            </configuration>
           </execution>
           <execution>
             <id>coverage-check</id>
@@ -192,6 +196,9 @@
               <goal>check</goal>
             </goals>
             <configuration>
+              <includes>
+                <include>com.mycompany.calculator.*</include>
+              </includes>
               <rules>
                 <rule>
                   <element>BUNDLE</element>
