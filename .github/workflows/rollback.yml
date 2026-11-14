@@ -1,0 +1,133 @@
+name: Rollback
+
+# Manual, production-gated recovery: restore a known-good package version and
+# optionally revoke the broken one. Nothing is deleted unless explicitly asked.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to restore, must already exist in GitHub Packages (for example 1.0.0)"
+        required: true
+        type: string
+      failed_version:
+        description: "Broken package version to revoke (optional, for example 1.0.0-main.42)"
+        required: false
+        default: ""
+        type: string
+      delete_failed_version:
+        description: "Delete failed_version from GitHub Packages (destructive)"
+        required: false
+        default: false
+        type: boolean
+      reason:
+        description: "Why this rollback is needed (recorded in the run summary)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rollback
+  cancel-in-progress: false
+
+env:
+  PACKAGE: com.mycompany.calculator-app
+  REGISTRY: https://maven.pkg.github.com/ZarifRamzan/Calculator-javaProject
+  REPOSITORY_OWNER: ZarifRamzan
+
+jobs:
+  rollback:
+    name: "Rollback · restore known-good version"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://github.com/ZarifRamzan/Calculator-javaProject/packages
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Validate the request
+        env:
+          TARGET: ${{ inputs.version }}
+          FAILED_INPUT: ${{ inputs.failed_version }}
+          DELETE_FLAG: ${{ inputs.delete_failed_version }}
+        run: |
+          VERSION="${TARGET#v}"
+          if [[ -z "${VERSION}" ]]; then
+            echo "::error::A target version is required"
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          if [[ "${DELETE_FLAG}" == "true" ]]; then
+            FAILED="${FAILED_INPUT#v}"
+            if [[ -z "${FAILED}" ]]; then
+              echo "::error::delete_failed_version requires failed_version"
+              exit 1
+            fi
+            if [[ "${FAILED}" == "${VERSION}" ]]; then
+              echo "::error::Refusing to delete the version being restored"
+              exit 1
+            fi
+            echo "FAILED=${FAILED}" >> "$GITHUB_ENV"
+            echo "Will delete ${FAILED} after restoring ${VERSION}"
+          fi
+          echo "Rolling back to ${VERSION}"
+
+      - name: Verify the target version exists in the registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL="${REGISTRY}/com/mycompany/calculator-app/${VERSION}/calculator-app-${VERSION}.pom"
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" "${URL}")"
+          echo "Registry responded with HTTP ${CODE}"
+          if [[ "${CODE}" != "200" ]]; then
+            echo "::error::Version ${VERSION} is not available in GitHub Packages"
+            exit 1
+          fi
+          echo "Version ${VERSION} is available"
+
+      - name: Point the latest release to the restored version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${VERSION}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --latest
+            echo "Marked ${TAG} as the latest release"
+          else
+            echo "::notice::No GitHub Release exists for ${TAG}; the package version was still verified"
+          fi
+
+      - name: Delete the broken package version
+        if: inputs.delete_failed_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "/users/${REPOSITORY_OWNER}/packages/maven/${PACKAGE}/versions" > versions.json
+          ID="$(jq -r --arg version "${FAILED}" '.[] | select(.name == $version) | .id' versions.json | head -n 1)"
+          if [[ -z "${ID}" || "${ID}" == "null" ]]; then
+            echo "::error::Could not find version ${FAILED} in the package registry"
+            exit 1
+          fi
+          gh api --method DELETE "/users/${REPOSITORY_OWNER}/packages/maven/${PACKAGE}/versions/${ID}"
+          echo "Deleted ${FAILED} (version id ${ID})"
+
+      - name: Record the rollback
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "## Rollback completed"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Restored version | ${VERSION} |"
+            echo "| Revoked version | ${FAILED:-none} |"
+            echo "| Requested by | @${GITHUB_ACTOR} |"
+            echo "| Reason | ${REASON:-not provided} |"
+            echo ""
+            echo "Consumers should pin ${VERSION}. The production environment records this change."
+          } >> "$GITHUB_STEP_SUMMARY"
