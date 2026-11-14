@@ -3,13 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
     branches: [main]
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
-# Least privilege by default; jobs elevate only what they need.
 permissions:
   contents: read
 
@@ -114,20 +114,22 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Package executable JAR
-        run: mvn $MAVEN_ARGS -DskipTests package
+      - name: Package executable JAR and SBOM
+        run: mvn $MAVEN_ARGS -DskipTests -Djacoco.skip=true package
 
       - name: Verify artifact
         run: |
-          ls -l target/*.jar
+          ls -l target/*.jar target/bom.json
           unzip -p target/*.jar META-INF/MANIFEST.MF
-          sha256sum target/*.jar
+          sha256sum target/*.jar target/bom.json
 
-      - name: Upload JAR
+      - name: Upload JAR and SBOM
         uses: actions/upload-artifact@v7
         with:
-          name: calculator-app-jar
-          path: target/*.jar
+          name: calculator-app-dist
+          path: |
+            target/*.jar
+            target/bom.json
           if-no-files-found: error
           retention-days: 14
 
@@ -197,3 +199,62 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: /language:java-kotlin
+
+  deploy:
+    name: "Deploy · GitHub Packages"
+    needs: [build, test, security-sca, codeql]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://github.com/ZarifRamzan/Calculator-javaProject/packages
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Resolve deployment version
+        id: version
+        run: |
+          BASE="$(mvn -q -DforceStdout help:evaluate -Dexpression=revision | tail -n 1)"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${BASE}-main.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Deploying version ${VERSION}"
+
+      - name: Configure Maven for GitHub Packages
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'SETTINGS'
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          SETTINGS
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          mvn $MAVEN_ARGS -Drevision=${{ steps.version.outputs.value }}
+          -DskipTests -Djacoco.skip=true deploy
