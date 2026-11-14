@@ -6,29 +6,52 @@ got here (decision history); this file explains how the pipeline behaves today.
 
 ---
 
+## Table of contents
+
+1. [TL;DR](#1-tldr)
+2. [The three workflows](#2-the-three-workflows)
+3. [How the pipeline is wired](#3-how-the-pipeline-is-wired)
+4. [Triggers](#4-triggers)
+5. [Job reference](#5-job-reference)
+6. [Versioning rules](#6-versioning-rules)
+7. [Release flow](#7-release-flow)
+8. [Rollback](#8-rollback)
+9. [Reading a run](#9-reading-a-run)
+10. [Reproducing CI locally](#10-reproducing-ci-locally)
+11. [Failure playbook](#11-failure-playbook)
+12. [Changing the pipeline](#12-changing-the-pipeline)
+13. [Security model](#13-security-model)
+14. [Required checks and environments](#14-required-checks-and-environments)
+15. [FAQ](#15-faq)
+16. [Quick reference](#16-quick-reference)
+
+---
+
 ## 1. TL;DR
 
 | Question | Answer |
 | --- | --- |
-| Where is the pipeline defined? | §.github/workflows/ci.yml§ (CI/CD) and §.github/workflows/release.yml§ (releases) |
+| Where is the pipeline defined? | §.github/workflows/ci.yml§ (build/test/scan/deploy), §release.yml§ (releases), §rollback.yml§ (recovery) |
 | What happens on a pull request? | §validate → test → build§ plus both security scans; **no deploy** |
 | What happens on a push to §main§? | the same, then **deploy** to GitHub Packages |
 | What happens when I push a §vX.Y.Z§ tag? | CI verifies + deploys that exact version, and a GitHub Release is published with the JAR, SBOM and checksums |
 | What happens on a documentation-only change? | only the §Detect changes§ job runs (~20 s); build, test, security and deploy are skipped |
-| How long does a full run take? | ~2 m 30 s on a cold runner (CodeQL dominates) |
-| How do I reproduce a failure locally? | run the same Maven command shown in the job table (§9§) |
+| How do I recover from a bad release? | run the **Rollback** workflow with the version to restore (§8§) |
+| How long does a full run take? | ~2 m 20 s on a cold runner (CodeQL dominates) |
+| How do I reproduce a failure locally? | run the same Maven command shown in the job table (§10§) |
 
 ---
 
-## 2. The two workflows
+## 2. The three workflows
 
-| Workflow | File | Purpose | Writes to |
-| --- | --- | --- | --- |
-| **CI** | §.github/workflows/ci.yml§ | verify every change, scan it, publish the package | Packages, code scanning |
-| **Release** | §.github/workflows/release.yml§ | turn a tag into a GitHub Release with assets | Releases |
+| Workflow | File | Trigger | Purpose | Writes to |
+| --- | --- | --- | --- | --- |
+| **CI** | §.github/workflows/ci.yml§ | push, PR, tag, schedule, manual | verify, scan and publish the package | Packages, code scanning |
+| **Release** | §.github/workflows/release.yml§ | tag §v*.*.*§, manual | turn a tag into a GitHub Release with assets | Releases |
+| **Rollback** | §.github/workflows/rollback.yml§ | manual only | restore a known-good version, optionally revoke the broken one | Packages, Releases, deployment history |
 
-They are intentionally separate: CI answers “is this commit good?”, Release answers “ship this
-version”. A tag push triggers both.
+CI answers “is this commit good?”, Release answers “ship this version”, Rollback answers “undo it”.
+A tag push triggers CI and Release.
 
 ---
 
@@ -74,19 +97,18 @@ compilation is broken. Deploy is the opposite — it waits for everything.
 
 ---
 
-## 4. Trigger matrix
+## 4. Triggers
 
-| Event | Filter | CI | Release |
-| --- | --- | --- | --- |
-| Push | branch §main§, code change | ✅ full, deploys §X-main.<run>§ | — |
-| Push | branch §main§, docs only | ✅ §Detect changes§ only | — |
-| Push | tag §v*.*.*§ | ✅ full (always), deploys §X.Y.Z§ | ✅ creates/updates the release |
-| Pull request | base §main§, code change | ✅ validate/test/build/scan only | — |
-| Pull request | base §main§, docs only | ✅ §Detect changes§ only | — |
-| Schedule | §17 3 * * 1§ (Mon 03:17 UTC) | ✅ full (CVE drift check) | — |
-| Manual | §workflow_dispatch§ | ✅ full, deploy allowed | ✅ with a §tag§ input |
+| Event | Filter | CI | Release | Rollback |
+| --- | --- | --- | --- | --- |
+| Push | branch §main§, code change | ✅ full, deploys §X-main.<run>§ | — | — |
+| Push | branch §main§, docs only | ✅ §Detect changes§ only | — | — |
+| Push | tag §v*.*.*§ | ✅ full (always), deploys §X.Y.Z§ | ✅ creates/updates the release | — |
+| Pull request | base §main§ | ✅ validate/test/build/scan only | — | — |
+| Schedule | §17 3 * * 1§ (Mon 03:17 UTC) | ✅ full (CVE drift check) | — | — |
+| Manual | §workflow_dispatch§ | ✅ full, deploy allowed | ✅ with a §tag§ input | ✅ with §version§ input |
 
-A new push to the same ref cancels the previous run:
+A new push to the same ref cancels the previous CI run:
 
 §§§yaml
 concurrency:
@@ -94,8 +116,8 @@ concurrency:
   cancel-in-progress: true
 §§§
 
-That is why a superseded run shows “Cancelling since a higher priority waiting request … exists”. It
-is expected, not a failure.
+Rollback deliberately does **not** cancel in progress (§cancel-in-progress: false§): a recovery must
+never be interrupted by another recovery.
 
 ### 4.1 Documentation-only changes
 
@@ -154,6 +176,10 @@ run: mvn -B -ntp checkstyle:check     # static analysis
 run: mvn -B -ntp spotless:check       # formatting
 §§§
 
+This is the **single** lint/format stage. Every downstream job passes
+§-Dcheckstyle.skip=true -Dspotless.check.skip=true§ (§SKIP_LINT§ in the workflow environment), so the
+same analysis is never paid for three times.
+
 - Enforcer evaluates four rules: Maven ≥ 3.8.6, JDK ≥ 17, no duplicate dependency versions, dependency
   convergence.
 - Checkstyle console output is summarized as §You have N Checkstyle violations.§
@@ -164,11 +190,12 @@ run: mvn -B -ntp spotless:check       # formatting
 ### 5.2 §test§ — "Test · Unit & Coverage" (timeout 20 min)
 
 §§§yaml
-run: mvn -B -ntp verify
+run: mvn -B -ntp $SKIP_LINT -Dcyclonedx.skip=true verify
 §§§
 
-Runs the full lifecycle up to §verify§, which includes a second pass of lint/format (intentional: the
-local command and CI command are identical) plus JUnit 5, JaCoCo report and the coverage gate.
+Runs the lifecycle up to §verify§: JUnit 5, JaCoCo report and the coverage gate. Lint is skipped
+(already done) and so is SBOM generation (the §build§ job owns it), which keeps this job to the work
+that actually proves correctness.
 
 - Uploads §jacoco-report§ (HTML/XML) and §surefire-reports§.
 - Gate: line ≥ 80 %, branch ≥ 70 %, at least one measured class.
@@ -178,7 +205,7 @@ local command and CI command are identical) plus JUnit 5, JaCoCo report and the 
 ### 5.3 §build§ — "Build · Package" (timeout 15 min)
 
 §§§yaml
-run: mvn -B -ntp -DskipTests -Djacoco.skip=true package
+run: mvn -B -ntp $SKIP_LINT -DskipTests -Djacoco.skip=true package
 §§§
 
 - Produces §target/calculator-app-<version>.jar§ (manifest with §Main-Class§) and §target/bom.json§
@@ -218,7 +245,9 @@ Autobuild runs Maven, so the project must compile; results appear under §/langu
 Runs only for §push§/§workflow_dispatch§, only for code changes, and only after every other job
 passes, behind the §production§ environment with §packages: write§.
 
-Steps: resolve version → write §~/.m2/settings.xml§ (server id §github§) → §mvn … deploy§.
+Steps: resolve version → write §~/.m2/settings.xml§ (server id §github§) → §mvn … deploy§ with the
+same §SKIP_LINT§/§skipTests§/§jacoco.skip§ flags, so it publishes exactly what was already verified
+instead of re-running the checks.
 
 **Fails when:** permissions are missing (§403§), the version already exists (§409§), or the server id
 in the settings file does not match §distributionManagement§ in the POM.
@@ -269,7 +298,51 @@ Details that matter:
 
 ---
 
-## 8. Reading a run
+## 8. Rollback
+
+**Workflow:** §.github/workflows/rollback.yml§ — manual, gated by the §production§ environment,
+§contents: write§ + §packages: write§, never cancelled by concurrency.
+
+| Input | Required | Meaning |
+| --- | --- | --- |
+| §version§ | yes | the known-good version to restore (for example §1.0.0§); a leading §v§ is stripped |
+| §failed_version§ | no | the broken package version to revoke |
+| §delete_failed_version§ | no (default §false§) | actually delete §failed_version§ from GitHub Packages |
+| §reason§ | no | recorded in the run summary and the environment history |
+
+What the job does, in order:
+
+1. **Validate the request** — normalises §v§-prefixed versions, refuses an empty target, refuses to
+   delete the version being restored.
+2. **Verify the target exists** — resolves §/com/mycompany/calculator-app/<version>/calculator-app-<version>.pom§
+   against the Maven registry, following the registry's redirect (§curl -sL§) and requiring HTTP 200.
+   A missing version fails here, before anything is changed.
+3. **Re-point “Latest”** — if a GitHub Release §v<version>§ exists, §gh release edit --latest§ makes it the
+   current release again.
+4. **Revoke the broken version (opt-in)** — looks the version id up through the Packages API and deletes
+   it. Destructive, which is why it is a separate flag and skipped by default.
+5. **Record the outcome** — writes a table (restored version, revoked version, requester, reason) to the
+   job summary; the §production§ environment keeps the deployment history.
+
+§§§text
+Actions → Rollback → Run workflow
+  version: 1.0.0
+  failed_version: 1.0.0-main.42
+  delete_failed_version: false
+  reason: "main.42 shipped a broken build"
+§§§
+
+Notes:
+
+- Rollback cannot “un-deploy” a version that consumers already resolved; it restores the pointer to a
+  known-good coordinate and, if asked, removes the broken one so it cannot be pulled again.
+- Deleting a package version is irreversible and breaks anyone pinning it — keep the flag off unless
+  the version must disappear (for example a leaked artifact).
+- The rollback workflow is independent of CI, so it still works when §main§ is red.
+
+---
+
+## 9. Reading a run
 
 1. **Actions → CI → pick the run.** The left column lists jobs; the top shows total duration.
 2. **Annotations** (top of the run) summarize errors without opening logs — e.g. “Process completed with
@@ -280,22 +353,22 @@ Details that matter:
 5. For deeper debugging, set repository secret §ACTIONS_STEP_DEBUG=true§ (and §ACTIONS_RUNNER_DEBUG§)
    — the next run will emit verbose logs.
 
-Typical cold-run timings on the free runner pool:
+Typical cold-run timings on the free runner pool (after the lint-once optimisation):
 
 | Scenario | Time |
 | --- | --- |
 | docs-only change | ~20 s (§Detect changes§ only) |
-| validate | ~20 s |
+| validate | ~25 s |
 | test | ~30 s |
-| build | ~20 s |
-| security-sca | ~25 s |
-| codeql | ~1 m 45 s |
-| deploy | ~30 s |
-| **full run total** | **~2 m 35 s** |
+| build | ~25 s |
+| security-sca | ~20 s |
+| codeql | ~1 m 40 s |
+| deploy | ~25 s |
+| **full run total** | **~2 m 20 s** |
 
 ---
 
-## 9. Reproducing CI locally
+## 10. Reproducing CI locally
 
 | CI step | Local command |
 | --- | --- |
@@ -303,16 +376,19 @@ Typical cold-run timings on the free runner pool:
 | Checkstyle | §mvn checkstyle:check§ |
 | Spotless check | §mvn spotless:check§ |
 | All lint/format | §mvn validate§ |
-| Tests + coverage gate | §mvn verify§ |
+| Tests + coverage gate | §mvn verify§ (runs lint too, unlike CI) |
 | Package only | §mvn -DskipTests -Djacoco.skip=true package§ |
 | Full deploy to Packages | §mvn -Drevision=1.0.0 -DskipTests -Djacoco.skip=true deploy§ (needs §~/.m2/settings.xml§) |
 
 Prerequisites are the same as CI enforces: **JDK 17+**, **Maven 3.8.6+**.
 Coverage report: open §target/site/jacoco/index.html§.
 
+> CI skips lint in §test§/§build§/§deploy§ only because §validate§ already ran it. A plain
+> §mvn verify§ locally is therefore slightly stricter than any single CI job — that is intentional.
+
 ---
 
-## 10. Failure playbook
+## 11. Failure playbook
 
 | Log signature | Meaning | Fix |
 | --- | --- | --- |
@@ -328,13 +404,15 @@ Coverage report: open §target/site/jacoco/index.html§.
 | Deploy §409 Conflict§ | version already published | branch builds already use §-main.<run>§; bump the tag version |
 | §Cannot diff against …§ | base commit unavailable (force-push) | expected fallback: the full pipeline runs |
 | All jobs “skipped” | the change was documentation-only | expected; §Detect changes§ explains which files matched |
+| Rollback: §Version … is not available§ | wrong version or not yet published | pick a version listed under *Packages* |
+| Rollback: §Could not find version …§ | the redirect/registry check passed but the API cannot see it | check the package name and permissions |
 | Release “release already exists” | manual release created first | job is idempotent — verify the §gh release view§ branch is present |
 | §waiting for another serialized run§ | concurrency group is busy | wait, or cancel the older run |
 | “Invalid workflow file” | YAML syntax/indentation error | validate the YAML before pushing |
 
 ---
 
-## 11. Changing the pipeline
+## 12. Changing the pipeline
 
 **Add a step** to an existing job (keep the §name:§ — it becomes the check name in the UI):
 
@@ -377,6 +455,9 @@ Coverage report: open §target/site/jacoco/index.html§.
 “documentation”. Add paths there if a new documentation folder appears; keep the list conservative —
 anything that can affect a build, test or scan must stay in the “code” bucket.
 
+**Keep the lint-once rule:** if you add a job that runs Maven, include §$SKIP_LINT§ unless the job is
+§validate§ itself. Otherwise CI starts paying for the same analysis again.
+
 YAML gotchas that break §ci.yml§:
 
 - Tabs are illegal — spaces only (2 per level).
@@ -388,20 +469,21 @@ YAML gotchas that break §ci.yml§:
 
 ---
 
-## 12. Security model of the pipeline
+## 13. Security model of the pipeline
 
 | Control | How it is implemented |
 | --- | --- |
-| Least privilege | workflow default §contents: read§; §security-events: write§ only on scanning jobs; §packages: write§ only on deploy |
+| Least privilege | workflow default §contents: read§; §security-events: write§ only on scanning jobs; §packages: write§ only on deploy/rollback; §contents: write§ only on release/rollback |
 | No credential persistence | §persist-credentials: false§ on every checkout |
 | Third-party pinning | Trivy pinned to a commit SHA; GitHub-owned actions on major tags; Dependabot proposes bumps |
 | Immutable evidence | checksums printed in the build log, SBOM attached to the artifact and the release |
 | Findings routing | SARIF uploaded to code scanning (§category: trivy§ and §/language:java-kotlin§) |
-| Environment gate | §production§ environment on deploy (add required reviewers to require approval) |
+| Environment gate | §production§ environment on deploy and rollback (add required reviewers) |
+| Reversibility | rollback workflow requires an explicit version and separates restore from destructive delete |
 
 ---
 
-## 13. Required checks and environments
+## 14. Required checks and environments
 
 When enabling a ruleset for §main§, require exactly these check names (they come from the job §name:§
 fields):
@@ -415,21 +497,22 @@ Security · SAST (CodeQL)
 §§§
 
 Do **not** require §Deploy · GitHub Packages§ on pull requests — it never runs there, so the PR would
-wait forever.
+wait forever. The same applies to the Rollback workflow (manual only).
 
 Docs-only pull requests are safe with these checks: their jobs are reported as *skipped*, which counts
 as successful, so the pull request stays mergeable.
 
-Environment: §Settings → Environments → production§ — add required reviewers and a wait timer to make
-deployments and releases approval-based.
+Environment: §Settings → Environments → production§ — add required reviewers and a wait timer so that
+deployments, releases and rollbacks are approval-based.
 
 ---
 
-## 14. FAQ
+## 15. FAQ
 
-**Why does linting run twice (validate job and again inside `verify`)?**
-Because the local command (§mvn verify§) must be identical to CI. The duplicate pass costs a few
-seconds and removes the classic “works locally, fails in CI” drift.
+**Why does the pipeline skip lint in test/build/deploy?**
+Because §validate§ already ran exactly the same Checkstyle and Spotless configuration on the same
+commit. Running it again costs time without adding signal — the gate is still enforced, once, before
+anything else.
 
 **Why is `security-sca` not blocked by failing tests?**
 A vulnerable dependency must be visible even when the build is red; otherwise a broken build silently
@@ -448,6 +531,10 @@ still report success.
 It cannot by construction: the classifier only skips paths that are not compiled, tested, scanned or
 packaged. Anything else — including §pom.xml§ and §.github/**§ — is treated as code.
 
+**How do I roll back a bad version?**
+Run the Rollback workflow with the known-good §version§ (§8§). It never deletes anything unless you set
+§delete_failed_version§.
+
 **How do I deploy without a new commit?**
 §Actions → CI → Run workflow§ on §main§. Manual runs always execute the full pipeline and deploy a
 fresh §-main.<run>§ version.
@@ -460,12 +547,13 @@ fresh §-main.<run>§ version.
 
 ---
 
-## 15. Quick reference
+## 16. Quick reference
 
 | Item | Value |
 | --- | --- |
 | JDK | Temurin 17 (§JAVA_VERSION§) |
 | Maven flags | §-B -ntp -Dstyle.color=always§ (§MAVEN_ARGS§) |
+| Lint-once flag | §-Dcheckstyle.skip=true -Dspotless.check.skip=true§ (§SKIP_LINT§) |
 | Gate job | §Detect changes§ → output §code§ (§true§/§false§) |
 | Docs paths | §docs/**§, §*.md§, §LICENSE§, §.gitignore§, §.editorconfig§ |
 | Artifacts | §checkstyle-report§, §jacoco-report§, §surefire-reports§, §calculator-app-dist§ |
@@ -473,4 +561,5 @@ fresh §-main.<run>§ version.
 | Package coordinates | §com.mycompany:calculator-app§ |
 | Registry | §https://maven.pkg.github.com/ZarifRamzan/Calculator-javaProject§ |
 | Release assets | JAR, §bom.json§, §SHA256SUMS§ |
+| Rollback | §Actions → Rollback → Run workflow§ (§version§, optional §failed_version§) |
 | Failure entry point | *Actions → run → job → step log*, plus the Annotations panel |
