@@ -81,8 +81,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           URL="${REGISTRY}/com/mycompany/calculator-app/${VERSION}/calculator-app-${VERSION}.pom"
-          CODE="$(curl -s -o /dev/null -w '%{http_code}' -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" "${URL}")"
-          echo "Registry responded with HTTP ${CODE}"
+          # The registry answers with a redirect to the artifact storage, so follow it.
+          CODE="$(curl -sL --max-time 30 -o /dev/null -w '%{http_code}' -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" "${URL}")"
+          echo "Registry responded with HTTP ${CODE} for ${URL}"
           if [[ "${CODE}" != "200" ]]; then
             echo "::error::Version ${VERSION} is not available in GitHub Packages"
             exit 1
