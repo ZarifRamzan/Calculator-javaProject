@@ -10,6 +10,7 @@ on:
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
+# Least privilege by default; jobs elevate only what they need.
 permissions:
   contents: read
 
@@ -20,6 +21,9 @@ concurrency:
 env:
   JAVA_VERSION: "17"
   MAVEN_ARGS: -B -ntp -Dstyle.color=always
+  # Static analysis runs once in "validate"; downstream jobs skip it to avoid
+  # doing the same work three times. Locally, plain "mvn verify" still runs it.
+  SKIP_LINT: -Dcheckstyle.skip=true -Dspotless.check.skip=true
 
 jobs:
   # Cheap gate that runs first: documentation-only changes skip the heavy jobs.
@@ -146,7 +150,7 @@ jobs:
           cache: maven
 
       - name: Unit tests with coverage gate
-        run: mvn $MAVEN_ARGS verify
+        run: mvn $MAVEN_ARGS $SKIP_LINT -Dcyclonedx.skip=true verify
 
       - name: Upload coverage report
         if: always()
@@ -186,7 +190,9 @@ jobs:
           cache: maven
 
       - name: Package executable JAR and SBOM
-        run: mvn $MAVEN_ARGS -DskipTests -Djacoco.skip=true package
+        run: >-
+          mvn $MAVEN_ARGS $SKIP_LINT
+          -DskipTests -Djacoco.skip=true package
 
       - name: Verify artifact
         run: |
@@ -333,5 +339,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
-          mvn $MAVEN_ARGS -Drevision=${{ steps.version.outputs.value }}
+          mvn $MAVEN_ARGS $SKIP_LINT
+          -Drevision=${{ steps.version.outputs.value }}
           -DskipTests -Djacoco.skip=true deploy
