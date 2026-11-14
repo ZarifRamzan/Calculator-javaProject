@@ -13,9 +13,12 @@ This repository is a fork of
 [Saurabh-pec/Calculator-javaProject](https://github.com/Saurabh-pec/Calculator-javaProject) that adds
 an enterprise-grade CI/CD pipeline, a testable domain core and repository hygiene.
 
-> **Full implementation guide:** [docs/IMPLEMENTATION-GUIDE.md](docs/IMPLEMENTATION-GUIDE.md) — the
-> complete journey from the upstream fork to the released pipeline, including design decisions,
-> troubleshooting and the operations runbook.
+## Documentation
+
+| Guide | What it answers |
+| --- | --- |
+| [Pipeline Guide](docs/PIPELINE-GUIDE.md) | How the CI/CD works: triggers, jobs, versioning, release flow, failure playbook, how to change the pipeline |
+| [Implementation Guide](docs/IMPLEMENTATION-GUIDE.md) | Why it looks like this: the full journey from the upstream fork to the released pipeline, with design decisions and trade-offs |
 
 ## Architecture
 
@@ -38,7 +41,9 @@ calculation logic.
 │   ├── workflows/release.yml     # tag-driven GitHub Release
 │   └── dependabot.yml            # weekly Maven and GitHub Actions updates
 ├── config/checkstyle/checkstyle.xml
-├── docs/IMPLEMENTATION-GUIDE.md
+├── docs/
+│   ├── PIPELINE-GUIDE.md
+│   └── IMPLEMENTATION-GUIDE.md
 ├── src/main/java/com/mycompany/calculator/
 │   ├── CalculatorEngine.java
 │   ├── CalculatorModel.java
