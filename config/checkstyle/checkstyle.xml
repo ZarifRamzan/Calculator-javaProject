@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  Curated Checkstyle ruleset for CalculatorApp.
+
+  Rules are limited to checks that are unambiguous, automatable and valuable
+  in review: layout, imports, naming and correctness smells. Severity
+  "warning" is treated as a build failure by maven-checkstyle-plugin
+  (violationSeverity = warning).
+-->
+<module name="Checker">
+  <property name="charset" value="UTF-8"/>
+  <property name="fileExtensions" value="java"/>
+  <property name="severity" value="warning"/>
+
+  <module name="NewlineAtEndOfFile"/>
+
+  <module name="FileTabCharacter">
+    <property name="eachLine" value="true"/>
+  </module>
+
+  <module name="RegexpSingleline">
+    <property name="format" value="\s+$"/>
+    <property name="message" value="Line must not end with whitespace."/>
+  </module>
+
+  <module name="LineLength">
+    <property name="max" value="120"/>
+    <property name="tabWidth" value="4"/>
+  </module>
+
+  <module name="TreeWalker">
+
+    <!-- Imports -->
+    <module name="AvoidStarImport"/>
+    <module name="UnusedImports"/>
+    <module name="RedundantImport"/>
+
+    <!-- Layout -->
+    <module name="LeftCurly"/>
+    <module name="RightCurly"/>
+    <module name="NeedBraces"/>
+    <module name="WhitespaceAround"/>
+    <module name="WhitespaceAfter"/>
+    <module name="NoWhitespaceBefore"/>
+    <module name="OneStatementPerLine"/>
+    <module name="MultipleVariableDeclarations"/>
+    <module name="Indentation">
+      <property name="basicOffset" value="4"/>
+      <property name="braceAdjustment" value="0"/>
+      <property name="caseIndent" value="4"/>
+      <property name="throwsIndent" value="8"/>
+      <property name="arrayInitIndent" value="4"/>
+      <property name="lineWrappingIndentation" value="8"/>
+    </module>
+
+    <!-- Correctness smells -->
+    <module name="EmptyStatement"/>
+    <module name="EqualsHashCode"/>
+    <module name="MissingSwitchDefault"/>
+    <module name="FallThrough"/>
+    <module name="SimplifyBooleanExpression"/>
+    <module name="SimplifyBooleanReturn"/>
+    <module name="StringLiteralEquality"/>
+
+    <!-- Naming -->
+    <module name="PackageName"/>
+    <module name="TypeName"/>
+    <module name="MethodName"/>
+    <module name="MemberName"/>
+    <module name="ParameterName"/>
+    <module name="LocalVariableName"/>
+    <module name="ConstantName"/>
+
+    <!-- Documentation -->
+    <module name="MissingJavadocType">
+      <property name="scope" value="public"/>
+    </module>
+
+  </module>
+</module>
