@@ -17,7 +17,7 @@ an enterprise-grade CI/CD pipeline, a testable domain core and repository hygien
 
 | Guide | What it answers |
 | --- | --- |
-| [Pipeline Guide](docs/PIPELINE-GUIDE.md) | How the CI/CD works: triggers, jobs, versioning, release flow, failure playbook, how to change the pipeline |
+| [Pipeline Guide](docs/PIPELINE-GUIDE.md) | How the CI/CD works: triggers, jobs, docs-only gate, versioning, release and rollback flows, failure playbook |
 | [Implementation Guide](docs/IMPLEMENTATION-GUIDE.md) | Why it looks like this: the full journey from the upstream fork to the released pipeline, with design decisions and trade-offs |
 
 ## Architecture
@@ -39,6 +39,7 @@ calculation logic.
 ├── .github/
 │   ├── workflows/ci.yml          # validate -> test -> build -> security -> deploy
 │   ├── workflows/release.yml     # tag-driven GitHub Release
+│   ├── workflows/rollback.yml    # manual, production-gated recovery
 │   └── dependabot.yml            # weekly Maven and GitHub Actions updates
 ├── config/checkstyle/checkstyle.xml
 ├── docs/
@@ -63,12 +64,17 @@ Runs on every push and pull request to `main`, on `v*.*.*` tags, weekly and on d
 
 | Stage | Job | What is enforced |
 | --- | --- | --- |
+| Gate | `changes` | Classifies the diff; documentation-only changes skip every heavy job |
 | Validate | `validate` | Maven Enforcer (Maven >= 3.8.6, JDK >= 17, dependency convergence, no duplicate dependencies), Checkstyle, Spotless |
 | Test | `test` | JUnit 5 suites plus a JaCoCo gate (>= 80% line, >= 70% branch, at least one class measured) |
 | Build | `build` | Reproducible JAR, CycloneDX SBOM, manifest and checksum verification, artifacts uploaded |
 | Security | `security-sca` | Trivy scans dependencies, secrets and configuration for HIGH/CRITICAL findings (SARIF) |
 | Security | `codeql` | CodeQL `security-extended` analysis (SARIF) |
 | Deploy | `deploy` | Publishes the Maven artifact to GitHub Packages behind the `production` environment |
+
+Lint and format run once, in `validate`; `test`, `build` and `deploy` pass
+`-Dcheckstyle.skip=true -Dspotless.check.skip=true` so the same analysis is never repeated. A local
+`mvn verify` stays stricter than any single CI job.
 
 Deployment versioning is derived automatically: tag pushes deploy the tag version (`1.0.0`), while
 `main` builds deploy a unique pre-release version (`1.0.0-main.<run_number>`) so the registry never
@@ -85,6 +91,21 @@ exact tagged commit, then publishes a GitHub Release containing:
 - generated release notes (`--generate-notes`).
 
 Tags containing a hyphen (for example `v1.1.0-rc1`) are published as pre-releases.
+
+### `rollback.yml` - manual recovery
+
+Workflow-dispatch only, gated by the `production` environment and never cancelled by concurrency:
+
+| Input | Purpose |
+| --- | --- |
+| `version` | known-good version to restore (must exist in GitHub Packages) |
+| `failed_version` | broken version to revoke (optional) |
+| `delete_failed_version` | actually delete `failed_version` from the registry (destructive, default off) |
+| `reason` | recorded in the run summary and deployment history |
+
+The job verifies the target version against the Maven registry, re-points the “Latest” release with
+`gh release edit --latest`, optionally deletes the broken package version, and writes an audit table to
+the job summary. Nothing is deleted unless you ask for it.
 
 ### Cutting a release
 
@@ -103,22 +124,27 @@ GitHub Packages, and the GitHub Release is created with the assets above.
 ### Pipeline design choices
 
 - **Least privilege** - the workflow defaults to `permissions: contents: read`; only the security
-  jobs receive `security-events: write` and only the deploy job receives `packages: write`.
+  jobs receive `security-events: write`, deploy/rollback receive `packages: write`, and only
+  release/rollback receive `contents: write`.
 - **Fail fast and cheap** - `test` runs only after `validate` passed, `build` depends on both, and
   `deploy` waits for every security job.
+- **No duplicate work** - docs-only changes run a single 20-second classifier; lint runs once; the
+  SBOM is generated once in `build`.
 - **Deterministic behavior** - pinned plugin and action versions, CI-friendly `${revision}` versions,
   `project.build.outputTimestamp` for reproducible archives, Maven dependency cache.
 - **No floating third-party code** - Trivy is pinned to a commit SHA; Dependabot proposes reviewed
   upgrades for both Maven and Actions.
 - **Supply-chain visibility** - JAR checksums and a CycloneDX SBOM are produced for every build and
   attached to every release; SARIF results land in GitHub code scanning.
+- **Reversible releases** - every deploy and rollback is recorded against the `production`
+  environment, and a known-good version can be restored without a new commit.
 
 ### Recommended repository settings
 
 1. **Ruleset for `main`** - require pull requests and the `Validate`, `Test`, `Build` and
    `Security` checks; disallow force pushes.
-2. **Environment protection** - add required reviewers to the `production` environment so deploys
-   need approval.
+2. **Environment protection** - add required reviewers to the `production` environment so deploys,
+   releases and rollbacks need approval.
 3. **Secret scanning and push protection**, plus **Dependabot alerts**.
 
 ## Local development
