@@ -58,7 +58,9 @@ jobs:
           sha256sum ./*.jar ./bom.json > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Publish GitHub Release
+      # Idempotent: creates the release for the tag, or refreshes its assets when the
+      # release was already published from the UI.
+      - name: Publish or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -67,13 +69,22 @@ jobs:
           if [[ "${TAG}" == *-* ]]; then
             PRE_RELEASE="--prerelease"
           fi
-          gh release create "${TAG}" \
-            target/*.jar \
-            target/bom.json \
-            target/SHA256SUMS \
-            --title "CalculatorApp ${TAG}" \
-            --generate-notes \
-            ${PRE_RELEASE}
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists, refreshing assets"
+            gh release upload "${TAG}" \
+              target/*.jar \
+              target/bom.json \
+              target/SHA256SUMS \
+              --clobber
+          else
+            gh release create "${TAG}" \
+              target/*.jar \
+              target/bom.json \
+              target/SHA256SUMS \
+              --title "CalculatorApp ${TAG}" \
+              --generate-notes \
+              ${PRE_RELEASE}
+          fi
 
       - name: Write job summary
         env:
