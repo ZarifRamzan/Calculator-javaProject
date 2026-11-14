@@ -6,18 +6,34 @@
 
   <groupId>com.mycompany</groupId>
   <artifactId>calculator-app</artifactId>
-  <version>1.0.0</version>
+  <version>${revision}</version>
   <packaging>jar</packaging>
 
   <name>CalculatorApp</name>
-  <description>Java Swing desktop calculator with an enterprise-grade CI pipeline.</description>
+  <description>Java Swing desktop calculator with an enterprise-grade CI/CD pipeline.</description>
+
+  <scm>
+    <connection>scm:git:https://github.com/ZarifRamzan/Calculator-javaProject.git</connection>
+    <developerConnection>scm:git:git@github.com:ZarifRamzan/Calculator-javaProject.git</developerConnection>
+    <url>https://github.com/ZarifRamzan/Calculator-javaProject</url>
+    <tag>HEAD</tag>
+  </scm>
+
+  <distributionManagement>
+    <repository>
+      <id>github</id>
+      <name>GitHub Packages</name>
+      <url>https://maven.pkg.github.com/ZarifRamzan/Calculator-javaProject</url>
+    </repository>
+  </distributionManagement>
 
   <properties>
+    <revision>1.0.0</revision>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <project.build.outputTimestamp>2024-01-01T00:00:00Z</project.build.outputTimestamp>
     <maven.compiler.release>17</maven.compiler.release>
-    <main.class>Calculator</main.class>
+    <main.class>com.mycompany.calculator.ui.CalculatorFrame</main.class>
     <junit.version>5.10.2</junit.version>
   </properties>
 
@@ -98,7 +114,6 @@
           <failOnViolation>true</failOnViolation>
           <violationSeverity>warning</violationSeverity>
           <outputFile>${project.build.directory}/checkstyle-result.xml</outputFile>
-          <excludes>**/Calculator.java</excludes>
         </configuration>
         <executions>
           <execution>
@@ -118,7 +133,7 @@
         <configuration>
           <java>
             <includes>
-              <include>src/main/java/com/mycompany/calculator/**/*.java</include>
+              <include>src/main/java/**/*.java</include>
               <include>src/test/java/**/*.java</include>
             </includes>
             <removeUnusedImports/>
@@ -216,6 +231,25 @@
                 </rule>
               </rules>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.cyclonedx</groupId>
+        <artifactId>cyclonedx-maven-plugin</artifactId>
+        <version>2.8.1</version>
+        <configuration>
+          <outputFormat>json</outputFormat>
+          <outputName>bom</outputName>
+        </configuration>
+        <executions>
+          <execution>
+            <id>generate-sbom</id>
+            <phase>package</phase>
+            <goals>
+              <goal>makeAggregateBom</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
